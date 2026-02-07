@@ -1,0 +1,352 @@
+---
+title: "ex-02_wdi"
+output: html_document
+date: "2025-08-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+-------------------------------
+```{r} 
+library(ggplot2) 
+library(patchwork)
+library(dplyr)
+library(tidyr)
+
+theme <- theme_classic() +
+  theme(text = element_text(size = 12), axis.title = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 12, hjust = 0),
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        strip.text.y = element_text(size = 12),
+        strip.placement = "outside", strip.background = element_blank(),
+        axis.title.y = element_text(margin = margin(0, 10, 0, 0)),
+        axis.title.x = element_text(margin = margin(10, 0, 0, 0)))
+
+load("~/###STUDIUM/LM-Regression/ex-02/wdi.Rdata")
+
+View(wdi)
+head(wdi)
+str(wdi)
+```
+
+a)
+Herausfiltern von Daten aus 2013
+```{r}
+wdi_2013 <- subset(wdi, wdi$year == 2013)
+# wdi |> filter(year == 2013)
+
+summary(wdi_2013$Population)
+summary(wdi_2013$CO2emission)
+#sehr weite Range bei beiden Variablen 
+# einige NAs
+```
+
+Spalte für Population je 1000 Einwohner erstellen
+```{r}
+
+wdi_2013$Population1000 <- wdi_2013$Population / 1000
+```
+
+Graphische Visualisierung der Verteilungen von Bevölkerung/1000 Einwohner und C02-Emissionen
+=> brauchen Long-Daten 
+```{r}
+
+wdi_2013_long <- 
+  wdi_2013 |> pivot_longer(cols = c(Population1000, CO2emission), names_to = "a", values_to = "v")
+
+plot_a <- 
+  wdi_2013_long |> 
+  ggplot(aes(x = v)) + 
+  theme + 
+  geom_density() + 
+  facet_wrap(~a, scales ="free_y")
+```
+
+Es scheint wir müssen den Datenbereich verkleinern, um besser zu sehen 
+```{r}
+
+gridExtra::grid.arrange(plot_a, plot_a + 
+               ggtitle("Eingeschränkter Datenbereich") + 
+                 xlim(0,1e5))
+```
+#Beide Variablen sind extrem linkssteil verteilt 
+# Großteil der Länder hat vergleichsweise kleine Bevölkerung 
+#sowie relativ niedrige CO2-Emissionen 
+
+=> Durchführung einer log10-Transformation (leicht zu interpretieren)
+log-Transformation hilft uns auch, Annahme normalverteilter Fehlerterme näherzukommen
+Fügen wdi_2013 entsprechende Spalte hinzu 
+```{r}
+
+wdi_2013 <- 
+  wdi_2013 |> mutate(log10_Population = log10(Population), 
+                   log_10_CO2 = log10(CO2emission))
+```
+
+Linears Modell nun graphisch: Transformiert vs. nicht transformiert 
+```{r}
+
+gg_steil <- ggplot(wdi_2013, aes(x = Population1000, y = CO2emission), label = country) + 
+  geom_point() + ggtitle("Originaldaten")
+
+gg_transf <- ggplot(wdi_2013, aes(x = log10_Population, y = log_10_CO2)) + 
+  geom_point() + ggtitle("Transformierte Daten")
+
+(gg_steil + geom_smooth(method = "lm")) +
+  (gg_transf + geom_smooth(method = "lm"))
+
+#deutlich sichtbar: Erst durch log-Transformation können wie überhaupt sinnvoll modellieren
+#nur dann ist ein annähernd linearer Zusammenhang gegeben
+```
+
+
+#Man erkennt, dass es untransformiert definitiv Probleme gibt 
+#Residuen nehmen in x zu (keine Varianzhomogenität/Homoskedastizität) 
+#sichtbar am zunehmenden Abstand zur Regr.gerade 
+#und an sich ausweitender SE-Umgebung/ß1-Konf.intervall von geom_smooth()
+
+b)
+Lineares Regressionsmodell mit log-Daten fitten 
+```{r}
+
+lm_co2_Pop_log10 <- lm(log_10_CO2 ~ log10_Population, data = wdi_2013)
+summary(lm_co2_Pop_log10)
+```
+
+log_10_CO2 ist y-Variable 
+Nun alle weiteren (potentiellen) Regressoren betrachten
+(bis auf year, was keinen Sinn ergibt, und country, was sich nur zur Gruppierung eignet)
+
+Starten mit Vergleich aller individuellen Dichtekurven
+```{r}
+plot_dens_all <- 
+  ggplot(data = pivot_longer(wdi_2013, cols = GDP:PopulationRural, 
+    names_to = "comp", values_to = "val"), 
+    aes(x = val)) + 
+  geom_density() + 
+  facet_wrap(~comp, scales = "free")
+```
+#Plot mit Kerndichteschätzern ermöglicht Identifikation von schiefen Vertelungen und Ausreißern 
+#=> Einige der stark schiefen Verteilungen sollten wir transformieren 
+
+c)
+Transformieren (neben oben bereits diskutieren CO2 und Population (nicht Population1000!)) außerdem 
+PopulationRural, GDP und Area mit log10()
+
+Anmerkung: log10(x + 1) wählen wir bei linkssteilen Variablen, die den Wert 0 enthalten 
+[so schließen wir nicht definierten log10(0) aus]
+```{r}
+
+wdi_2013 |> 
+  select(where(is.numeric)) |>                            
+  select(where(function(col) any(col <= 0, na.rm = TRUE) ) ) |>                             
+  names() 
+#alternativ mit BaseR 
+# names(wdi_2013)[sapply(df, function(col) {
+#  is.numeric(col) && any(col <= 0, na.rm = TRUE)} ) ]
+```
+#PopulationRural erfüllt diese Bedingung 
+
+Transformationen durchführen
+```{r}
+wdi_2013_transf <- 
+  mutate(wdi_2013, CO2emission = log10(CO2emission), 
+         Population = log10(Population), 
+         PopulationRural = log10(PopulationRural + 1), 
+         Area = log10(Area), 
+         GDP = log10(GDP) 
+  )
+```
+
+Nochmal Densities nach den Transformationen vergleichen
+```{r}
+plot_dens_all_new <- 
+  ggplot(data = pivot_longer(wdi_2013_transf, cols = GDP:PopulationRural, 
+                             names_to = "comp", values_to = "val"), aes(x = val) ) +
+  theme +
+  geom_density() + 
+  facet_wrap(~comp, scales = "free") #einzelne Skalen wichtig, sonst sieht man NICHTS! 
+```
+#passt jetzt einigermaßen 
+#Wichtig: Bimodal etc. stört uns nicht, solange es keine extremen fat/thin tails in der Verteilung gibt.
+
+d) Modellierung:
+Schauen uns erst mal Variablen Population, Livestock, Area, GDP einzeln grafisch an
+```{r}
+ggplot(data = pivot_longer(wdi_2013_transf, cols = c(Population, Livestock, Area, GDP), 
+                           names_to = "regressors", values_to = "values"), 
+       aes(x = values, y = CO2emission) ) +
+  theme +
+  geom_point(alpha = 0.1) + 
+  geom_smooth(method = "lm") +
+  facet_wrap(~regressors, scales = "free")
+
+#Für die Fläche, die Einwohnerzahl und das GDP besteht ein positiver Zusammenhang
+#mit den CO2-Emissionen. Zwischen dem Livestock-Index und den CO2-Emissionen ist
+#kein ausgeprägter Zusammenhang erkennbar.
+```
+
+Nun erweitern wir lineares Modell mit nur Population als Einflussgröße (siehe oben) um 
+Area, Employees.M.IND und Livestock (zur Illustration)
+```{r}
+
+lm_co2_mult <- lm(data = wdi_2013_transf, 
+                  CO2emission ~ Population + Area + Employees.M.IND + Livestock, 
+                  na.action = na.exclude)
+summary(lm_co2_mult)
+```
+Interpretation der Koeffizientenschätzer:
+- β0: β0 bezeichnet die erwarteten logarithmierten CO2-Emissionen, wenn alle Einflussgrößen gleich 0 sind.
+⇒ Der Parameter ist in diesem Fall nicht sinnvoll interpretierbar.
+β1: Steigt die logarithmierte Bevölkerungszahl um eine Einheit, so erhöhen sich die
+logarithmierten CO2-Emissionen eines Landes c.p. durchschnittlich um 0.9376 kt.
+β2: Steigt die logarithmierte Fläche um einen km2, so erhöhen sich die logarithmierten
+CO2-Emissionen eines Landes c.p. durchschnittlich um 0.0071 kt.
+ß3: Steigt der Anteil männlicher Angestellter in der Industrie um einen Prozentpunkt,
+so erhöhen sich die logarithmierten CO2-Emissionen c.p. durchschnittlich um 0.0520kt.
+β4: Steigt der Livestock-Index um eine Einheit, so sinken die logarithmierten CO2-
+Emissionen eines Landes c.p. um durchschnittlich 0.0009 kt.
+
+Können auch "normale" Interpretation hinsichtlich der unlogarithmierten CO2-Emissionen liefern 
+Rücktransformation: 10^log10(x) = x 
+Also Steigt die logarithmierte Bevölkerungszahl um eine Einheit, so erhöhen sich die erwarteten CO2-Emissionen c.p. um 10^0.9376 ≈ 8.66 kt 
+bzw: Steigt Bevölkerungszahl um Faktor a, so steigen erwartete CO2-Emissionen 
+c.p. um a^ß1 = 10^ß1*log10(a)
+
+---------------------------------------------------------------------------------------
+e) EFFEKTPLOTS
+Visualisieren unter Verwendung des R-Paketes "visreg" für jede Einflussvariable ihren individuellen Beitrag zum linearen Prädiktor sowie die zugehörige Unsicherheit der Schätzung.
+
+Konditionale Darstellung des indivduellen Effekts:
+Idee: Erwartungswerte E(y_i|x_i1, ..., x_ij, ..., x_ip) für verschiedene Werte von x_ij der interessierenden Kovariable j unter konstanten anderen Einflussgrößen 
+x_i1, ..., x_i(j−1), x_i(j+1), ..., x_ip (z.B. Verwendung derer Mittelwerte)
+→ dann Betrachtung von x~i = (MW(x_1), ..., x_ij, ..., MW(x_p)) neue Zeilen in Designmatrix 
+
+Im multiplen linearen Modell ohne Interaktionen und ohne nichtlineare x-Terme ist der konditionale Effektplot eines Prädiktors im Grunde nur die grafische Darstellung seines Regressionskoeffizienten. Die Steigung im Plot ist dann genau β_k, die anderen Modellkomponenten (Intercept und andere Variablen) verschieben nur den „Offset“
+
+Beide Methoden (conditional, contrast) sind in simplen linearen Modell mathematisch nur unterschiedliche Repräsentationen desselben linearen Zusammenhangs.
+
+Konditionaler Effektplot: Bessere Methode, wenn wir untersuchen, wie sich der Outcome über Range von Prädiktor hinweg verändert. 
+
+
+Angewendet auf unser Modell: 
+```{r}
+
+par(mfrow = c(2, 2)) # Grafische Darstellung in 2x2
+visreg(fit = lm_co2_mult, type = "conditional",
+       ylim = range(wdi$CO2emission, na.rm = TRUE)) 
+#zur Vergleichbarkeit der Effekte solle bezüglich aller Kovariablen dieselbe y-Skala verwendet werden
+```
+Alternativ mit dem R-Paket "effects", welches standardmäßig konditionale Darstellung nutzt. 
+
+```{r}
+plot(allEffects(lm_co2_mult), ylim = range(wdi$CO2emission, na.rm = TRUE))
+```
+
+
+Kontrastbasierter Effekt (auch zentrierte Interpretation gen.): 
+Idee: Wie ändert sich y^i, wenn sich x_ij in Bezug auf einen 
+Referenzwert der isolierten Kovarible #x_j, meist MW(x), ändert? 
+
+y^i − #y^i = .... (x_ij − #x_j)β^j
+
+⇒ Die Kontrastdarstellung ermöglicht eine isolierte Betrachtung einer einzelnen Kovariable x_j, berücksichtigt bei der Schätzung der Unsicherheit allerdings auch nur die Schätzung von βj.
+# siehe Plot: Konfintervall von ßj am Mittelwert von x_j quasi nicht sichtbar
+
+Angewendet auf unser Modell: 
+```{r}
+
+par(mfrow = c(2, 2))
+visreg(fit = lm_co2_mult, type = "contrast", 
+       ylim = c(-2, 2)) #engere Skala als bei konditional, betrachten ja nur eine Differenz 
+```
+##Interpretation in beiden Fällen: 
+#je mehr die Regressionsgerade durch die Punkte einer konstanten Linie ähnelt (also je geringer die Steigung bzw. je flacher) umso geringer der Effekt dieser Kovariable. 
+
+#Beide Darstellungsformen messen sehr ähnliche individuelle Effekte
+#Beiträge von Population und Employees.M.IND zum linearen Prädiktor sind deutlich stärker als bei Area und Livestock
+#(letztere hatten auch sehr geringe Koeff.schätzer mit sehr niedrigem t-Wert, also höchst unsignifikant)
+
+
+
+```{r}
+
+```
+
+f)Betrachten nun univariaten Zusammenhang zwischen PopulationRural und den CO2-Emissionen. 
+Dann fügen wir die Variable zum obigen multiplen linearen Regressionsmodell hinzu. 
+
+```{r}
+ggplot(data = wdi_2013_transf, 
+       aes(x = PopulationRural, y = CO2emission)) + 
+  geom_point() + 
+  geom_smooth(method = "lm")
+
+#ansatzweise linearer Zusammenhang erkennbar 
+#leider vermiesen es uns einige Ausreißer-Hebelpunkte ganz links
+```
+
+Fügen PopulationRural dem multiplen Modell hinzu.
+```{r}
+lm_co2_mult_rur <- lm(data = wdi_2013_transf, 
+                  CO2emission ~ Population + PopulationRural + Area + Employees.M.IND + Livestock, 
+                  na.action = na.exclude)
+summary(lm_co2_mult_rur)
+
+```
+Effektplots (Kontrastdarstellung)
+```{r}
+par(mfrow = c(2, 3))
+visreg(fit = lm_co2_mult_rur, type = "contrast", ylim = c(-2, 2))
+par(mfrow = c(1, 1))
+```
+#Es zeigt sich: PopulationRural hat im multiplen Modell einen ganz anderen (nicht positiven) linearen geschätzten Effekt vs. univariate Betrachtung 
+Obwohl die Landbevölkerung gut mit den CO2-Emissionen eines Landes korreliert, führt eine Erhöhung um eine Einheit ceteris paribus im Mittel zu einer Verringerung der logarithmierten CO2-Emissionen eines Landes um 0.185 kt.
+Mögliche Erklärung: Bevölkerungseffekt im Modell bereits für Variable Population berücksichtigt. 
+Bei konstanter Bevölkerungszahl könnte eine höhere Landbevölkerung (geringere Industrialisierung) somit zu niedrigeren CO2-Emissionen führen.
+
+g) 
+Fügen nun das (log-10 transformierte) GDP dem Modell hinzu. 
+```{r}
+
+lm_co2_mult_gdp <- lm(data = wdi_2013_transf, 
+                  CO2emission ~ Population + PopulationRural + GDP + 
+                    Area + Employees.M.IND + Livestock, 
+                  na.action = na.exclude)
+summary(lm_co2_mult_gdp)
+
+```
+
+Effektplots(Kontrastdarstellung)
+```{r}
+par(mfrow = c(2, 3))
+visreg(fit = lm_co2_mult_gdp, type = "contrast", ylim = c(-2, 2))
+```
+
+#Effekt von Population deutlich geringer als vorher 
+#Effekt von PopulationRural verschwindet nahezu (nicht mehr signifikant)
+
+Grund: Der Effekt von PopulationRural (und auch teilweise von Population) beruht auf dem Einfluss des Industrialisierungsgrads, welcher durch das GDP besser abgebildet wird. 
+Im Modell ohne GDP wird der Effekt von GDP bis zu gewissem Grad durch Population(höheres GDP durch höhere Einwohnerzahl) und Population Rural (tendenziell niedrigeres GDP bei größerer Landbevölkerung) "aufgesogen". PopulationRural wird in diesem Kontext - mit Population drin - zu einer Art Proxy für Industrialisierung. 
+# evtl. hätten wir PopulationRural und auch GDP je Einwohner betrachten sollen? Aber dann können wir Population selbst nicht mehr verwenden (perfekte Kollinearität zu beiden)
+=> ohne GDP im Modell fehlt uns eine immens wichtige Variable (Confounder) und folglich verzerrt uns das die Parameterschätzer von Population(Rural), sodass uns Scheinzusammenhänge oder zu starke Zhänge suggeriert werden
+
+

@@ -1,0 +1,193 @@
+---
+title: "ex-02_salaries"
+output: html_document
+date: "2025-08-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+-----------------------------------------
+
+```{r}
+salaries_raw <- read.csv("C:/Users/besitzer/Documents/###STUDIUM/LM-Regression/ex-02/ds_salaries.csv")
+
+head(salaries_raw)
+
+summary(salaries_raw)
+
+salaries_raw |> filter(salary > 30000000)
+
+```
+#salary-Spalte hat extremen Outlier (schwache Währung CLP, Chile)
+
+Datensatz beschränken auf Deutschland, GB und USA 
+```{r}
+salaries <- 
+  salaries_raw |> filter(company_location %in% c("DE", "GB", "US"))
+```
+
+Graphische Visualisierung der Gehälter über die Zeit gruppiert je Land 
+Muss vergleichbar sein, also nehmen wir salary_in_usd
+brauchen außerdem länderweise MW/Median/..., um sinnvollen Plot im Zeitablauf machen zu können 
+=> könnten Daten wide machen (einzelne Spalten für Länder) 
+=> oder schneller: tidyverse summarise nutzen für neuen Dataframe-Ausschnitt 
+
+```{r}
+salaries_comp <- 
+  salaries |> group_by(work_year, company_location) |> 
+  summarise(median_salary_in_usd = median(salary_in_usd, na.rm = TRUE))
+
+ggplot(data = salaries_comp, aes(x = work_year, y = median_salary_in_usd, color = company_location)) + 
+  geom_line(linewidth = 0.75) + 
+  xlab("") + ylab("Median-Gehalt in USD")
+```
+
+b) Graphische Visualisierung von Zielgröße "salaries_in_usd" je Land 
+=> Violin-Plot (unterschiedliche Farbe je Land) mit Boxplot drin 
+```{r}
+ggplot(salaries,
+       aes(x=company_location, y=salary_in_usd, fill = company_location)) + 
+  geom_violin() + 
+  geom_boxplot(width = 0.25, color = "black") + 
+  xlab("") + ylab("Gehalt in USD") +
+  scale_y_continuous(breaks = c(50000, 100000, 150000, 200000, 250000, 300000, 350000, 400000, 450000))
+```
+#Das Gehalt der Data Scientists ist rechtsschief bzw. linkssteil verteilt, d.h. ein kleiner Teil der Angestellten weist ein vergleichsweise hohes Gehalt auf
+=> log-Transformation von y-Variable mit natürlichem Logarithmus 
+
+```{r}
+
+ggplot(data = salaries, 
+       aes(x=company_location, y=log(salary_in_usd), fill = company_location)) + 
+  geom_violin() + 
+  geom_boxplot(width = 0.25, color = "black") + 
+  xlab("") + ylab("Logarithmiertes Gehalt") + 
+  scale_y_continuous(labels=scales::comma)
+
+```
+#Gehaltsverteilungen je Land sehen jetzt halbwegs modellierbar aus 
+
+Es ist jedoch noch erwarten, dass ein zeitlicher Effekt die Zielgröße beeinflusst, da in den Jahren
+2020 − 2023 die Inflation sehr hoch war.
+
+c)
+Testen mit Modell aus, ob das Jahr einen signifikanten Einfluss (das wollen wir nicht)
+
+```{r}
+
+salaries_adj <- read.csv("~/###STUDIUM/LM-Regression/ex-02/ds_salaries_adj.csv")
+
+model <- lm(data = salaries_adj, 
+            formula = salary_in_usd ~ company_location + company_size + year)
+summary(model)
+
+```
+
+Besseres Modell mit inflationsadjustierten (noch mit "year" drin) und logarithmieren Gehältern
+
+```{r}
+
+model_adj <- lm(data = salaries_adj, 
+            formula = log_salary_adj ~ company_location + company_size + year)
+summary(model_adj)
+```
+#year jetzt nicht mehr signifikant
+
+Unter Gleichhaltung aller anderen Variablen (c.p.):
+Im untransformierten Modell ist das durchschnittliche Gehalt einer mittelgroßen Firma
+6002 Euro und das einer kleinen Firma 38161 Euro geringer als das einer großen Firma 
+[Effekt hier im Verhältnis zu Referenzkategorie, die R bei diskreten Variablen automatisch festlegt
+Dazu wird Spalte in Faktor umgewandelt und Referenzlevel gesetzt]
+
+Im transformierten Modell ist das durchschnittliche Gehalt in einer mittelgroßen Firma um
+Faktor exp(−0.013) = 0.987 geringer und das einer kleinen Firma um Faktor exp(−0.391) = 0.676
+geringer als das einer Großfirma (wieder automatische Referenzkategorie), kaum noch sichtbarer Effekt 
+⇒ Interpretation des Intercepts bezieht sich auf Referenz: Durchschnittliches Gehalt eines Data Scientists in einer großen deutschen Firma im Jahr 2020 liegt bei etwa exp(11.25187) = 77.000 Euro.
+
+-------------------------------------------------------
+Exkurs: Was fällt am Modell/ an den Daten noch auf? 
+# employment_type has multiple categories, which are not comparable, i.e. part time vs full time.
+
+```{r}
+table(salaries_adj$employment_type)
+```
+=> Alles außer "FT" rausfiltern oder Faktor erstellen mit "FT" als Referenz 
+```{r}
+# salaries_adj_neu <- 
+#  salaries_adj |> filter(employment_type == "FT")
+
+# employment_type_factor <- factor(x = salaries_adj$employment_type,
+                                 # levels = c("FT", "PT", "CT", "FL"))
+```
+-------------------------------------------------------
+
+d) 
+Verwenden im Folgenden nur noch die transformierten Daten 
+Wir beschränken nun (Traninings-)Datensatz auf die Jahre 2020 bis 2022 und ersetzen dabei 
+die Variable work_year durch experience_level. Schätzen Modell neu. 
+Anhand dieses Trainigsdaten-Modells machen wir prediction mit Daten von 2023 (Testdaten) 
+
+
+```{r} 
+salaries_adj_train <- 
+  salaries_adj |> filter(work_year != 2023)
+
+salaries_adj_test <- setdiff(salaries_adj, salaries_adj_train)
+
+model_d <- lm(formula = log_salary_adj ~ company_location + 
+                company_size + experience_level,
+              data = salaries_adj_train)
+summary(model_d)
+
+prediction_d <- predict(model_d, newdata = salaries_adj_test)
+
+prediction_d
+```
+
+Güte der Prediktion mit "Root Mean Squared Error" messen 
+```{r}
+#Input sind Vektoren
+rmse <- function(y, y_hat) { 
+  rmse = sqrt(sum((y - y_hat)**2) / length(y))
+  return (rmse) 
+}
+
+rmse_d_test <- 
+  rmse(salaries_adj_test$log_salary_adj, prediction_d)
+
+rmse_d_test
+# 0.3732063
+```
+Graphischer Vergleich zwischen prädiktierten und tatsächlich beobachteten Werten auf der
+Originalskala:
+```{r}
+ggplot() + 
+  geom_point(aes(x = salaries_adj_test$salary_adj, 
+                 y = exp(prediction_d))) + 
+  geom_line(aes(x = salaries_adj_test$salary_adj, 
+                y = salaries_adj_test$salary_adj, #Vgl. prediction-points mit Winkelhalbierender
+                color = "red")) + 
+  geom_text(aes(x = 300000, y = 50000, label = paste("RMSE", round(rmse_test, 2))))
+
+#  Im graphischen Vergleich erkennt man, dass sehr hohe Gehälter deutlich unterschätzt werden.
+```
+
+
+

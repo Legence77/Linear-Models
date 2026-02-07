@@ -1,0 +1,192 @@
+---
+title: "ex-03_wdi"
+output: html_document
+date: "2025-09-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. 
+
+## Including Plots 
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+-----------------------------------------
+``` {r}
+# SETUP
+library(ggplot2) 
+library(patchwork)
+library(dplyr)
+library(tidyr)
+
+theme <- theme_classic() +
+  theme(text = element_text(size = 12), axis.title = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 12, hjust = 0),
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        strip.text.y = element_text(size = 12),
+        strip.placement = "outside", strip.background = element_blank(),
+        axis.title.y = element_text(margin = margin(0, 10, 0, 0)),
+        axis.title.x = element_text(margin = margin(10, 0, 0, 0)))
+```
+
+
+```{r}
+load("~/###STUDIUM/LM-Regression/ex-02/wdi.Rdata")
+
+View(wdi)
+head(wdi)
+str(wdi)
+
+```
+
+Arbeiten wieder mit WDI-Datensatz aus Exercise 02 
+Schränken wieder ein auf 2013, selektieren die relevanten Variablen und filtern alle NA-Rows von Area und Population raus (damit arbeiten wir unten) 
+Variablen-Transformation wie in Exercise 02 
+(erst Bevölerung/1000, danach auf diese und alle anderen Variablen log_10 anwenden)
+
+
+```{r}
+# wdi |> filter(year == 2013) 
+wdi_2013 <- subset(wdi, wdi$year == 2013, c(continent, country, year, Population, Area, CO2emission))
+
+wdi_2013 <- 
+  wdi_2013 |> filter(! (is.na(Population) | is.na(Area)) )
+
+wdi_2013$Population <- wdi_2013$Population / 1000
+
+wdi_2013 <- 
+  wdi_2013 |> mutate(log10.Population = log10(Population), 
+                     log10.CO2emission = log10(CO2emission), 
+                     log10.Area = log10(Area)
+  )
+```
+
+# Aufteilen in Trainings und Testdaten
+Wähle 100 Länder zufällig aus und ignoriere diese Stichprobe zunächst 
+Modelliere für die restlichen Länder den Zusammenhang zwischen Fläche und Bevölkerung (beide logarithmiert)
+
+```{r}
+set.seed(13458)
+wdi_test <- slice_sample(wdi_2013, n = 100, replace = FALSE)
+
+wdi_train <- wdi_2013 |> filter(!(country %in% wdi_test$country))
+
+model_train <- lm(data = wdi_train, log10.Population ~ log10.Area)
+summary(model_train)
+coef(model_train) 
+
+coef_model_train <- round(x = coef(model_train), digits = 2)
+```
+
+Berechnen Sie 99%-Konfidenzintervall für den geschätzten Steigungsparameter βˆ1 und interpretiere
+```{r}
+#manuell sehr mühsam
+KI_beta1 <- model_train$coef[2] + c(-1, 1) * summary(model_train)$coef[2, 2] *
+  qt(p = 0.995, df = nrow(wdi_train) - 2)
+KI_beta1
+
+#schneller so 
+KI_b1 <- confint(model_train, level = 0.99)[2, ]
+# confint( ) gibt einen Matrix-Table zurück, zweite Spalte sind Konf.intervallgrenen für ß^1 
+# hier sind die Einträge noch beschriftet, was eigentlich keine Auswirkung auf Rechnungen damit hat, aber besser weg damit
+names(KI_b1) <- NULL
+
+KI_b1
+
+# In 99% der Fälle liegt der wahre Parameter β1 innerhalb dieses Konfidenzintervalls (hypothetisch immer wieder Datensatz aus Grundgesamtheit ziehen und ß^1 mit Konf.intervall berechnen)
+# Da der Wert 0 nicht im Konfidenzintervall enthalten ist, hat die Fläche eines Landes einen signifikanten Einfluss auf die Bevölkerungszahl (zum Signifikanzniveau α = 0.01=)
+```
+
+Hängt die Bevölkerungsdichte zum Signifikanzniveau α = 0.01 von der Landes-Fläche ab? Rechne dafür die logarithmierten Informationen geschickt um
+# siehe Musterlösung: ja 
+
+Berechne 95%-Konfidenzintervall für die oben geschätzte Regressionsgerade des Traininsdatensatzes
+Visualisiere und interpretiere dieses Intervall.
+```{r}
+conf_train <- predict(object = model_train, interval = "confidence", level = 0.95)
+head(conf_train)
+# 95%-Konfidenzintervalls für die erwartete logarithmierte Bevölkerungszahl
+# Geschätzte Regressionsgerade liegt in 95% der Fälle innerhalb des Konfidenzintervalls. 
+
+gg_conf_train <- 
+  ggplot(wdi_train, aes(x = log10.Area, y = log10.Population, label = country)) +
+  geom_point() + 
+  geom_smooth(method = "lm", se = TRUE, level = 0.95) +
+  xlab("log10(Fläche) [km^2]") +
+  ylab("log10(Bevölkerung) [in Tsd.]") + 
+  theme
+
+gg_conf_train
+```
+
+Anteil der Beobachtungen der Trainingsdaten innerhalb des Konfidenzintervalls der Regr.gerade
+
+```{r}
+conf_train_df <- as.data.frame(conf_train)
+
+# mit eigener Funktion: 
+is_covered <- function(y, lwr, upr) {
+  mean(lwr <= y & y <= upr) 
+}
+# sehr clever. mean() nimmt TRUE und FALSE als 0 und 1, also suchen wir einfach MW von dieser Funktion angewendet auf wdi_train$log10.Population
+
+is_covered(wdi_train$log10.Population, conf_train[, "lwr"], conf_train[, "upr"])
+
+#mit baseR ohne Funktion
+# (wdi_train$log10.Population >= conf_pop_df$lwr) & 
+# (wdi_train$log10.Population <= conf_pop_df$upr)
+
+#mit dplyr::between( ) logical vector erzeugen
+conf_catched <- between(wdi_train$log10.Population, conf_train_df$lwr, conf_train_df$upr) 
+
+length(which(conf_catched == TRUE)) / nrow(wdi_train) 
+
+# Ca. 23.7% der Beobachtungen liegen innerhalb des Konfidenzintervalls
+# Vorsicht: Niveau des Konfidenzintervalls kann nicht dahingehend interpretiert werden, dass eine Beobachtung in (1 − α)% der Fälle innerhalb des Intervalls liegen sollte!!
+
+```
+Berechnen für die 100 aus der ursprünglichen Schätzung herausgelassenen Länder (Testdaten) ein 95%-Prognoseintervall. 
+Welcher Anteil der wahren Werte liegt im berechneten Prognoseintervall?
+
+Vergleiche das berechnete Prognoseintervall graphisch mit dem oben erstellten
+Konfidenzintervall der Regressionsgerade des Traingsdatensatzes
+
+```{r}
+model_test <- lm(data = wdi_test, log10.Population ~ log10.Area)
+
+pred_test <- predict(object = model_test, interval = "prediction", level = 0.95)
+head(conf_pop_test)
+# 95%-Prognoseintervall, bezieht sich auf tatsächliche Y-Werte 
+
+is_covered(wdi_test$log10.Population, pred_test[, "lwr"], pred_test[, "upr"])
+# [1] 0.95
+# 95 der 100 bei der Schätzung herausgelassenen Länder liegen innerhalb des 95%-Prognoseintervalls.
+# (Exakt 95 ist dem Zufall geschuldet, nur EW. Anteil könnte auch höher oder nieriger sein)
+# ⇒ insgesamt gute Coverage
+
+# erst Dataframe erzeugen mit Testdatensatz und prediction als Spalten rein 
+pred_df <- cbind(wdi_test, pred_test)
+
+gg_comp <- 
+  gg_conf_train +
+  geom_line(data = pred_df, aes(y = lwr), col = "red") +
+  geom_line(data = pred_df, aes(y = upr), col = "red")
+
+gg_comp
+# Prognoseintervall ist deutlich breiter als Konfidenzbänder, weil Berechnung
+# zusätzlich die Streuung von ϵn+1 berücksichtigt.
+
+```
+

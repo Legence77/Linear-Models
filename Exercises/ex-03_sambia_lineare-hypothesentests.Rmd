@@ -1,0 +1,260 @@
+---
+title: "ex-03_sambia_lineare-hypothesentests"
+output: html_document
+date: "2025-09-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. 
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+--------------------------------
+``` {r}
+# SETUP
+library(ggplot2) 
+library(patchwork)
+library(dplyr)
+library(tidyr)
+library(car)
+library(visreg)
+library(effects)
+
+theme <- theme_classic() +
+  theme(text = element_text(size = 12), axis.title = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 12, hjust = 0),
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        strip.text.y = element_text(size = 12),
+        strip.placement = "outside", strip.background = element_blank(),
+        axis.title.y = element_text(margin = margin(0, 10, 0, 0)),
+        axis.title.x = element_text(margin = margin(10, 0, 0, 0)))
+```
+
+
+Der Datensatz sambia92.raw enthält Informationen zum Ernährungszustand von Kindern in Sambia, die im Jahr 1992 von der WHO erhoben wurden. 
+Als Zielgröße für die Modellierung wird der sogenannte Z-Score verwendet, eine Maßzahl für chronische Unterernährung
+
+Die folgenden Variablen werden in dieser Aufgabe betrachtet:
+- zscore Z-Score (Index für chronische Unterernährung)
+- k_geschl (Geschlecht des Kindes)
+- k_still (Stilldauer in Monaten)
+- k_alter (Alter des Kindes in Monaten)
+- m_alterg (Alter der Mutter bei der Geburt in Jahren)
+- m_groesse (Körpergröße der Mutter in cm)
+- m_bmi (Body-Mass-Index der Mutter)
+
+Datensatz einlesen und beschränken auf Beobachtungen aus der am häufgsten im Datensatz vorkommenden Region Sambias
+(Regionen unterscheiden sich massiv, Confounder-Vermeidung)
+
+```{r}
+sambia <- read.table(file = "~/###STUDIUM/LM-Regression/ex-03/sambia92.raw", header = TRUE)
+head(sambia)
+str(sambia)
+summary(sambia)
+
+table(sambia$region)
+# Region 2 hat am meisten Beobachtungen 
+
+sambia <- 
+  sambia |> filter(region == 2)
+
+#relevante Variablen selektieren 
+
+sambia <- 
+  sambia |> select(zscore:m_bmi)
+```
+
+Graphische Visualisierung von nach Geschlecht getrennten metrischen Variablen
+```{r}
+
+# getrennte Boxplots nach Geschlecht 
+ggplot(data = pivot_longer(sambia, cols = !k_geschl, names_to = "name", values_to = "value")) +
+  geom_boxplot(aes(y = value, x = factor(k_geschl))) +
+  facet_wrap(~name, scale = "free") + 
+  theme
+
+# getrennte Dichteschätzer nach Geschlecht 
+ggplot(data = pivot_longer(sambia, cols = !k_geschl, names_to = "name", values_to = "value")) +
+  geom_density(aes(x = value, colour = factor(k_geschl))) +
+  facet_wrap(~name, scale = "free") + 
+  theme
+
+# => ⇒ Anhand der beiden Visualisierungen sind keine großen Unterschiede zwischen den Geschlechtern erkennbar. Wir müssen nicht getrennt nach Geschlecht modellieren (oder Dummy reinpacken)! 
+# ⇒ In den Dichteschätzungen wird im Gegensatz zu den Boxplots Multimodalität mancher Variablen-Verteilung deutlich, was aber kein schwerwiegendes Problem ist. 
+```
+
+Schätze multiples lineares Regressionsmodell, um den Z-Score anhand der Kovariablen
+k_geschl, k_still, k_alter, m_alterg, m_groesse und m_bmi zu beschreiben.
+```{r}
+model_full <- lm(data = sambia, formula = zscore ~ k_geschl + k_still + k_alter + m_alterg + m_groesse + m_bmi)
+
+summary(model_full)
+
+```
+Für das obige Regressionsmodell sollen im Folgenden verschiedene lineare
+Hypothesen zum Signifikanzniveau α = 0.05 getestet werden. 
+
+a) Teste, ob mindestens eine der verwendeten Kovariablen einen Zusammenhang mit dem ZScore aufweist.
+
+=> Overall-F-Test mit Nullhypothese: ß1 = ... ß6 = 0  
+```{r}
+## Berechnung mit car-package 
+A <- matrix(data = 0, nrow = 6, ncol = 7)
+diag(A[, 2:7]) <- 1
+c <- 0
+#rhs steht für "righthandside" weil c rechts im LGS
+car::linearHypothesis(model = model_full, hypothesis.matrix = A, rhs = c,
+test = "F") 
+
+# F-Wert 18.04 >> Schwellenwert, p-value gegen 0 
+# hätten uns das sparen können, das ist ein default output in R 
+
+# zum Niveau alpha = 0.05: reject nullhypothesis 
+# wir sehen nur den p-value. Wo alpha nun liegt, das machen wir selbst ggf. mit eigener Funktion 
+
+#pval sei ein Vektor mit p-values 
+test_decision <- function (pval, alpha) {
+  ifelse(pval < alpha, "reject H0", "fail to reject H0") 
+}
+
+
+## unschön: manuelle Berechnung 
+X <- model.matrix(model_full)
+beta_hat <- as.vector(model_full$coefficients)
+p <- length(beta_hat)-1
+A <- cbind(rep(0, p), diag(p))
+c <- rep(0, p)
+a <- nrow(A)
+n <- nrow(sambia)
+# Berechnung der Teststatistik:
+SSH <- as.vector(t(A %*% beta_hat - c) %*%
+solve(A %*% solve(t(X) %*% X) %*% t(A)) %*%
+(A %*% beta_hat - c))
+SSE <- as.vector(sum(model_full$residuals^2))
+TF <- (SSH / a) / (SSE / (nrow(sambia) - length(beta_hat)))
+TF
+## [1] 18.04013
+# Testentscheidung:
+TF > qf(p = 0.95, df1 = a, df2 = n - p - 1)
+## [1] TRUE
+```
+
+b)Teste, ob die Stilldauer einen Zusammenhang mit die Zielgröße aufweist.
+=> F-Test mit Nullhypothese ß2 = 0
+```{r}
+B <- rbind(c(0, 0, 1, 0, 0, 0, 0))
+B
+c <- 0
+car::linearHypothesis(model = model_full, hypothesis.matrix = as.vector(B), rhs = c, test = "F")
+#   Res.Df      RSS Df Sum of Sq      F Pr(>F)
+# 1    961 18304542                           
+# 2    960 18301427  1    3115.1 0.1634 0.6861
+
+# sehr hoher p-Wert von 0.69 (logischerweise äquivalent zum t-Test im Modell-Output)
+# können Nullhypothese nicht verwerfen zum Niveau alpha = 0.05
+```
+
+Vergleich der Quadratsummen von restringiertem Modell (ß_kstill = 0) mit vollem Modell 
+# Nutzen anova-Funktion 
+```{r}
+model_b <- lm(data = sambia, 
+                   formula = zscore ~ k_geschl + k_alter + m_alterg + m_groesse + m_bmi)
+summary(model_restr)
+summary(model_full)
+
+anova(model_b, model_full)
+# es ist exakt derselbe Output wie beim obigen F-Test 
+
+```
+
+# Diesen F-Wert können wir übrigens direkt aus dem vollen Modell beziehen 
+# es ist der quadrierte t-Wert von k_still
+```{r}
+summary(model_full)
+
+summary(model_full)$coef["k_still", ]
+## Estimate Std. Error t value Pr(>|t|)
+## -0.3256864 0.8056894 -0.4042332 0.6861313
+
+summary(model_full)$coef["k_still", "t value"]^2
+# [1] 0.1634045
+
+```
+
+c) Teste simultan, ob der Z-score linear abhängig ist vom Geschlechtes des Kindes
+oder dem Alter der Mutter bei der Geburt. 
+=> F-Test mit Nullhypothese: ß1 = ß4 = 0 
+```{r}
+C <- rbind(c(0, 1, 0, 0, 0, 0, 0), c(0, 0, 0, 0, 1, 0, 0))
+c <- c(0, 0)
+car::linearHypothesis(model = model_full, hypothesis.matrix = C, rhs = c, test = "F")
+
+#Vergleich der Quadratsummen wieder äquivalentes Ergebnis 
+model_c <- lm(formula = zscore ~ k_still + k_alter + m_groesse + m_bmi,
+data = sambia)
+summary(model_e)
+
+anova(model_c, model_full)
+
+# auf 5%-Niveau können wir Nullhypothese ganz knapp nicht verwerfen 
+# demnach können wir nicht gesichert sagen, dass beide zusammen einen signifikanten Einfluss auf den z-Score haben 
+# es ist aber möglich, dass eine isoliert signifikant ist 
+# Multikollinearität zwischen Geschlecht und Alter der Mutter bei der Geburt könnte den gemeinsamen Test beeinflussen (F-Test berücksichtigt dies, t-Test logischerweise nicht)
+```
+
+d) Teste, ob die Größe der Mutter denselben Zusammenhang mit dem Z-Score hat wie ihr BMI
+=> F-Test mit Nullhypothese: ß5 = ß6 
+```{r}
+D <- rbind(c(0, 0, 0, 0, 0, 1, -1))
+c <- 0
+car::linearHypothesis(model = model_full, hypothesis.matrix = as.vector(D), rhs = c, test = "F")
+
+# Vergleich der Quadratsummen 
+# restr. Modell nun mit I(var_5 + var_6) definieren 
+# R braucht dies aus syntaktischen Gründen
+
+model_d <- lm(formula = zscore ~ k_geschl + k_still + k_alter + m_alterg + I(m_groesse + m_bmi),
+data = sambia)
+
+summary(model_d)
+
+anova(model_d, model_full)
+
+# p-Value 0.2585, keine Ablehnung der Hypothese zum Nivau 0.05
+# es ist also möglich, dass Einfluss von Größe der Mutter und ihrem BMI identisch ist 
+```
+
+```{r}
+E <- rbind(c(0, 0, 0, 1, 0, 0, 0))
+c <- -2
+car::linearHypothesis(model = model_full, hypothesis.matrix = as.vector(E), rhs = c, test = "F")
+# p-Wert 0.93, Nullhypothese wird nicht verworfen
+# zur Erinnerung: berechneter Koeffizent war -1.96 
+# wenig überraschend ist unsere Hypothese also sehr wahrscheinlich
+
+# Achtung: Für Quadratsummenvergleich muss man das restringierte Modell mit ... + offset(-2 * k_alter) definieren! 
+# syntaktische Notwendigkeit. In formaler Modellgleichung ist es einfach intuitives -2*x_ik 
+model_e <- lm(data = sambia, 
+              formula = zscore ~ k_geschl + k_still + m_alterg + 
+                m_groesse + m_bmi + offset(-2 * k_alter) )
+
+summary(model_e)
+
+anova(model_e, model_full)
+
+```
+
